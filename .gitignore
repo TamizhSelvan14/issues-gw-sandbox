@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+
+# Build / dist
+dist/
+build/
+
+# Local env & DB
+.env
+events.db
+
+# Editors
+.vscode/
+.DS_Store
