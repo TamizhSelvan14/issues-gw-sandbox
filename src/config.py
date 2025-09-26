@@ -1,3 +1,4 @@
+### Coded by - Soham Jain - SJSUID- 019139796 ###
 # src/config.py
 import os
 from pydantic import BaseModel, ValidationError
