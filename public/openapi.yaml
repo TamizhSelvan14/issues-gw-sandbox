@@ -1,0 +1,482 @@
+openapi: 3.0.3
+info:
+  title: GitHub Issues Gateway
+  version: 0.1.0
+  description: |
+    A thin HTTP service that wraps the GitHub REST API for Issues for a single repository.
+    - Issue CRUD (close instead of delete) + comments
+    - Validates GitHub webhooks (issues, issue_comment, ping) via HMAC SHA-256
+    - Exposes recent processed events for debugging
+    - Forwards pagination/rate limit headers
+
+servers:
+  - url: http://localhost:{port}
+    description: Local dev
+    variables:
+      port:
+        default: "8080"
+
+tags:
+  - name: issues
+    description: Issue CRUD wrapper
+  - name: comments
+    description: Issue comments
+  - name: webhooks
+    description: GitHub webhook receiver and recent events
+  - name: system
+    description: Health endpoint
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: { "status": "ok" }
+
+  /issues:
+    post:
+      tags: [issues]
+      summary: Create an issue
+      description: Create a new GitHub issue in the configured repository.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateIssue"
+            examples:
+              basic:
+                value:
+                  title: "Bug: Save button doesn’t work on Firefox"
+                  body: "Steps to reproduce...\nExpected...\nActual..."
+                  labels: ["bug", "frontend"]
+      responses:
+        "201":
+          description: Created
+          headers:
+            Location:
+              description: Relative URL of the created resource
+              schema:
+                type: string
+                example: "/issues/42"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+              examples:
+                created:
+                  value:
+                    number: 42
+                    html_url: "https://github.com/owner/repo/issues/42"
+                    state: "open"
+                    title: "Bug: Save button doesn’t work on Firefox"
+                    body: "Steps to reproduce..."
+                    labels: [{ name: "bug" }, { name: "frontend" }]
+                    created_at: "2024-09-01T12:34:56Z"
+                    updated_at: "2024-09-01T12:34:56Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GitHubError"
+    get:
+      tags: [issues]
+      summary: List issues
+      description: |
+        Lists issues. Mirrors GitHub pagination semantics. Forwards `Link` and `X-RateLimit-*` headers.
+      parameters:
+        - $ref: "#/components/parameters/State"
+        - $ref: "#/components/parameters/Labels"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: OK
+          headers:
+            Link:
+              description: RFC5988 pagination links from GitHub (`next`, `prev`, `last`, `first`)
+              schema:
+                type: string
+            X-RateLimit-Limit:
+              schema:
+                type: string
+            X-RateLimit-Remaining:
+              schema:
+                type: string
+            X-RateLimit-Reset:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Issue"
+              examples:
+                page1:
+                  value:
+                    - number: 41
+                      html_url: "https://github.com/owner/repo/issues/41"
+                      state: "open"
+                      title: "Feature: Dark mode"
+                      body: "Please add dark mode"
+                      labels: [{ name: "feature" }]
+                      created_at: "2024-08-31T10:00:00Z"
+                      updated_at: "2024-08-31T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GitHubError"
+
+  /issues/{number}:
+    get:
+      tags: [issues]
+      summary: Get an issue
+      parameters:
+        - $ref: "#/components/parameters/IssueNumber"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GitHubError"
+    patch:
+      tags: [issues]
+      summary: Update/close/open an issue
+      parameters:
+        - $ref: "#/components/parameters/IssueNumber"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateIssue"
+            examples:
+              rename:
+                value: { "title": "[Updated] New title" }
+              close:
+                value: { "state": "closed" }
+              reopen:
+                value: { "state": "open" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GitHubError"
+
+  /issues/{number}/comments:
+    post:
+      tags: [comments]
+      summary: Add a comment to an issue
+      parameters:
+        - $ref: "#/components/parameters/IssueNumber"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Comment"
+            examples:
+              basic:
+                value: { "body": "Hello from my gateway!" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+              examples:
+                created:
+                  value:
+                    id: 123456
+                    body: "Hello from my gateway!"
+                    user: { login: "octocat" }
+                    created_at: "2024-09-01T12:45:00Z"
+                    html_url: "https://github.com/owner/repo/issues/42#issuecomment-123456"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/GitHubError"
+
+  /webhook:
+    post:
+      tags: [webhooks]
+      summary: GitHub webhook receiver
+      description: |
+        Validates `X-Hub-Signature-256` (HMAC SHA-256 with shared secret). Accepts `issues`, `issue_comment`, and `ping`.
+        Responds quickly with 204. Idempotent: deduped by (delivery id, action).
+      parameters:
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [issues, issue_comment, ping]
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema:
+            type: string
+            description: Unique delivery id
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-f]{64}$"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              description: Webhook JSON payload (varies by event)
+              type: object
+      responses:
+        "204":
+          description: Acknowledged
+        "401":
+          description: Invalid or missing HMAC signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidSig:
+                  value:
+                    error: "InvalidSignature"
+                    message: "HMAC verification failed"
+        "400":
+          description: Unsupported event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unsupported:
+                  value:
+                    error: "UnsupportedEvent"
+                    message: "Event 'push' not supported"
+
+  /events:
+    get:
+      tags: [webhooks]
+      summary: Recent processed webhook deliveries (debug)
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Event"
+              examples:
+                sample:
+                  value:
+                    - { id: "abc-123", event: "ping", action: "", issue_number: null, timestamp: "2024-09-01T12:00:00Z" }
+                    - { id: "def-456", event: "issues", action: "opened", issue_number: 42, timestamp: "2024-09-01T12:01:00Z" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "GitHub PAT (server-side)"
+
+  parameters:
+    IssueNumber:
+      name: number
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    State:
+      name: state
+      in: query
+      schema:
+        type: string
+        enum: [open, closed, all]
+        default: open
+    Labels:
+      name: labels
+      in: query
+      description: Comma-separated label names (GitHub behavior)
+      schema:
+        type: string
+        example: "bug,frontend"
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 30
+
+  schemas:
+    Label:
+      type: object
+      properties:
+        name:
+          type: string
+      required: [name]
+
+    Issue:
+      type: object
+      properties:
+        number: { type: integer }
+        html_url: { type: string, format: uri }
+        state: { type: string, enum: [open, closed] }
+        title: { type: string }
+        body: { type: string , nullable: true }
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/Label"
+        created_at: { type: string }
+        updated_at: { type: string }
+      required: [number, html_url, state, title, created_at, updated_at, labels]
+
+    CreateIssue:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        body: { type: string }
+        labels:
+          type: array
+          items: { type: string }
+      required: [title]
+      additionalProperties: false
+
+    UpdateIssue:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        body: { type: string }
+        state: { type: string, enum: [open, closed] }
+      additionalProperties: false
+
+    Comment:
+      type: object
+      properties:
+        id: { type: integer }
+        body: { type: string }
+        user:
+          type: object
+          additionalProperties: true
+        created_at: { type: string }
+        html_url: { type: string, format: uri }
+      required: [id, body, user, created_at, html_url]
+
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        event: { type: string }
+        action: { type: string , nullable: true }
+        issue_number: { type: string , nullable: true }
+        timestamp: { type: string }
+      required: [id, event, timestamp]
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+      required: [error, message]
+
+  responses:
+    BadRequest:
+      description: Client sent invalid input
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            badPayload:
+              value:
+                error: "BadRequest"
+                message: "Invalid request payload"
+    Unauthorized:
+      description: Missing/invalid GitHub token (as seen by server while calling GitHub), or insufficient scope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            unauthorized:
+              value:
+                error: "Unauthorized"
+                message: "Bad credentials"
+                details: { github_status: 401 }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            missingIssue:
+              value:
+                error: "NotFound"
+                message: "Issue 123 not found"
+                details: { github_status: 404 }
+    GitHubError:
+      description: Upstream GitHub error proxied as a gateway error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            rateLimited:
+              value:
+                error: "GitHubError"
+                message: "API rate limit exceeded"
+                details: { github_status: 403 }

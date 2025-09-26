@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.vscode/
+.venv/
+events.db
+.env
+.env.*
+.git
+public/*
+!public/openapi.yaml
