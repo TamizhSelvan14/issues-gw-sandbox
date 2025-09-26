@@ -1,3 +1,4 @@
+### Coded by - Soham Jain - SJSUID- 019139796 ###
 # src/github_client.py
 import httpx
 from typing import Any, Dict, List, Optional, Tuple
