@@ -1,4 +1,8 @@
-### Coded by - Jaya Vyas - SJSUID- 019144463 #####
+# Coded by: Jaya Vyas | jaya.vyas@sjsu.edu | SJSU ID: 019144463
+# Purpose: Thin gateway over GitHub Issues API for a single repo.
+# Notes: I validate webhooks via HMAC SHA-256, mirror pagination + rate limits,
+# and expose a small debug surface for recent webhook events.
+
 openapi: 3.0.3
 info:
   title: GitHub Issues Gateway
@@ -9,6 +13,7 @@ info:
     - Validates GitHub webhooks (issues, issue_comment, ping) via HMAC SHA-256
     - Exposes recent processed events for debugging
     - Forwards pagination/rate limit headers
+    # Why: I want a stable internal contract decoupled from GitHub SDKs, so clients talk to this gateway.
 
 servers:
   - url: http://localhost:{port}
@@ -16,6 +21,7 @@ servers:
     variables:
       port:
         default: "8080"
+        # I keep the port configurable to run multiple instances locally when testing concurrency.
 
 tags:
   - name: issues
@@ -26,6 +32,7 @@ tags:
     description: GitHub webhook receiver and recent events
   - name: system
     description: Health endpoint
+    # Tags help me keep Swagger UI organized for quick manual testing.
 
 paths:
   /healthz:
@@ -38,12 +45,14 @@ paths:
           content:
             application/json:
               example: { "status": "ok" }
+              # Used by k8s liveness checks and CI smoke tests.
 
   /issues:
     post:
       tags: [issues]
       summary: Create an issue
       description: Create a new GitHub issue in the configured repository.
+      # I only expose fields I intentionally support (title/body/labels) to keep the surface area small.
       requestBody:
         required: true
         content:
@@ -65,6 +74,7 @@ paths:
               schema:
                 type: string
                 example: "/issues/42"
+              # I return a relative Location to make gateway base-URL swaps painless across envs.
           content:
             application/json:
               schema:
@@ -91,6 +101,7 @@ paths:
       summary: List issues
       description: |
         Lists issues. Mirrors GitHub pagination semantics. Forwards `Link` and `X-RateLimit-*` headers.
+        # I forward pagination headers so clients can iterate without parsing bodies.
       parameters:
         - $ref: "#/components/parameters/State"
         - $ref: "#/components/parameters/Labels"
@@ -113,6 +124,7 @@ paths:
             X-RateLimit-Reset:
               schema:
                 type: string
+            # These headers help clients back off if they approach GitHub limits.
           content:
             application/json:
               schema:
@@ -157,6 +169,7 @@ paths:
     patch:
       tags: [issues]
       summary: Update/close/open an issue
+      # I use PATCH to align with partial updates on GitHub (title/body/state).
       parameters:
         - $ref: "#/components/parameters/IssueNumber"
       requestBody:
@@ -203,6 +216,7 @@ paths:
             examples:
               basic:
                 value: { "body": "Hello from my gateway!" }
+                # I intentionally restrict to comment body for simplicity/security.
       responses:
         "201":
           description: Created
@@ -234,6 +248,7 @@ paths:
       description: |
         Validates `X-Hub-Signature-256` (HMAC SHA-256 with shared secret). Accepts `issues`, `issue_comment`, and `ping`.
         Responds quickly with 204. Idempotent: deduped by (delivery id, action).
+        # I fail fast on invalid signatures to avoid doing any work on spoofed payloads.
       parameters:
         - name: X-GitHub-Event
           in: header
@@ -290,6 +305,7 @@ paths:
     get:
       tags: [webhooks]
       summary: Recent processed webhook deliveries (debug)
+      # I expose a capped list for observability; never returns raw GitHub secrets.
       parameters:
         - in: query
           name: limit
@@ -319,6 +335,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: "GitHub PAT (server-side)"
+      # The PAT is server-side only; clients only talk to the gateway.
 
   parameters:
     IssueNumber:
@@ -328,6 +345,7 @@ components:
       schema:
         type: integer
         minimum: 1
+      # I validate at the edge so upstream errors are less likely.
     State:
       name: state
       in: query
@@ -381,6 +399,7 @@ components:
         created_at: { type: string }
         updated_at: { type: string }
       required: [number, html_url, state, title, created_at, updated_at, labels]
+      # I keep required minimal but sufficient for UI rendering.
 
     CreateIssue:
       type: object
@@ -392,6 +411,7 @@ components:
           items: { type: string }
       required: [title]
       additionalProperties: false
+      # additionalProperties=false prevents accidental passthrough of unsupported fields.
 
     UpdateIssue:
       type: object
@@ -422,6 +442,7 @@ components:
         issue_number: { type: string , nullable: true }
         timestamp: { type: string }
       required: [id, event, timestamp]
+      # This is a compact, redacted model only for debugging UX.
 
     Error:
       type: object
@@ -432,6 +453,7 @@ components:
           type: object
           additionalProperties: true
       required: [error, message]
+      # I standardize error shape so clients can branch on `error` code.
 
   responses:
     BadRequest:
