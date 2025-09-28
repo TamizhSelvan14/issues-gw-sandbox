@@ -3,8 +3,10 @@
 import aiosqlite
 from typing import List, Tuple, Optional
 
+# SQLite database file name
 DB_PATH = "events.db"
 
+# SQL schema -> create events table if not already present
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (
   delivery_id TEXT NOT NULL,
@@ -17,11 +19,15 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+
+# init database -> create table on startup
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(CREATE_SQL)
         await db.commit()
 
+
+# insert webhook event in DB (idempotent -> ignore duplicates)
 async def insert_event(
     delivery_id: str,
     event: str,
@@ -29,8 +35,7 @@ async def insert_event(
     issue_number: Optional[int],
     payload: str,
 ):
-    """Insert a webhook event; ignore duplicates (idempotent)."""
-    action_key = action or ""  # NOT NULL column
+    action_key = action or ""  # make sure NOT NULL is satisfied
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -43,11 +48,16 @@ async def insert_event(
             )
             await db.commit()
     except Exception as e:
-        # Never crash the webhook handler because of storage errors.
+        # don’t crash webhook handler if DB write fails
         print("EVENT_STORE_WRITE_ERROR:", repr(e))
 
+
+# get recent events (for debugging/inspection)
 async def list_recent_events(limit: int = 20) -> List[Tuple[str, str, str, Optional[int], str]]:
-    """Return recent events for debugging: [(id, event, action, issue_number, timestamp), ...]"""
+    """
+    Return recent events like:
+    [(id, event, action, issue_number, timestamp), ...]
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """
